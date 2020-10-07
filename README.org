@@ -1,0 +1,2 @@
+* bratus (bspwm status?)
+  Watch bspwm changes and print them to stdout with colors suitable for lemonbar.
