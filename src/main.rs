@@ -1,5 +1,3 @@
-use std::io::stdout;
-use std::io::BufWriter;
 use {
     nix::{
         sys::signal::{kill, Signal::SIGTERM},
@@ -7,7 +5,7 @@ use {
     },
     std::{
         fmt::{self, Display},
-        io::{self, BufRead, BufReader, Write},
+        io::{self, stdout, BufRead, BufReader, BufWriter, Write},
         process::{Child, ChildStdout, Command, Stdio},
         str::FromStr,
     },
@@ -40,17 +38,6 @@ pub struct Colors {
     state: Color,
 }
 
-struct ChildKiller(Child);
-impl Drop for ChildKiller {
-    fn drop(&mut self) {
-        if let Err(e) = kill(Pid::from_raw(self.0.id() as i32), SIGTERM) {
-            eprintln!("{}", e);
-        } else if let Err(e) = self.0.wait() {
-            eprintln!("{}", e);
-        }
-    }
-}
-
 pub const BSPWM_CMD: &'static [&'static str] = &["bspc", "subscribe"];
 
 fn main() {
@@ -64,16 +51,29 @@ fn run() -> Res<()> {
     let out = stdout();
     let mut out = BufWriter::new(out.lock());
     let colors = Colors::from_args();
-    let (_child, mut child_stdout) = command_stdout(BSPWM_CMD)?;
+    let (child, mut child_stdout) = command_stdout(BSPWM_CMD)?;
     let mut buf = String::new();
+    let mut new_buf = String::new();
+
+    unsafe {
+        signal_hook::register(signal_hook::SIGTERM, move || {
+            if let Err(e) = kill(Pid::from_raw(child.id() as i32), SIGTERM) {
+                eprintln!("{}", e);
+            }
+            std::process::exit(0);
+        })?;
+    }
 
     loop {
-        match child_stdout.read_line(&mut buf) {
+        match child_stdout.read_line(&mut new_buf) {
             Ok(0) => break,
             Ok(_) => {
-                buf.pop();
-                print_bspwm(&colors, &mut out, &buf)?;
+                new_buf.pop();
+                if new_buf != buf {
+                    print_bspwm(&colors, &mut out, &new_buf)?;
+                }
                 buf.clear();
+                std::mem::swap(&mut new_buf, &mut buf);
             }
             error => error.map(|_| ())?,
         }
@@ -108,7 +108,7 @@ fn print_bspwm(c: &Colors, mut out: impl Write, bspwm: &str) -> Res<()> {
     out.flush()
 }
 
-fn command_stdout(command: &[&str]) -> Res<(ChildKiller, CmdOut)> {
+fn command_stdout(command: &[&str]) -> Res<(Child, CmdOut)> {
     let mut child = Command::new(command[0])
         .args(&command[1..])
         .stdout(Stdio::piped())
@@ -119,7 +119,7 @@ fn command_stdout(command: &[&str]) -> Res<(ChildKiller, CmdOut)> {
         .take()
         .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "No stdout of process"))?;
 
-    Ok((ChildKiller(child), BufReader::new(stdout)))
+    Ok((child, BufReader::new(stdout)))
 }
 
 impl Color {
