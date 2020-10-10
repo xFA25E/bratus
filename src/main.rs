@@ -3,6 +3,7 @@ use {
         sys::signal::{kill, Signal::SIGTERM},
         unistd::Pid,
     },
+    simple_signal::Signal,
     std::{
         fmt::{self, Display},
         io::{self, stdout, BufRead, BufReader, BufWriter, Write},
@@ -55,14 +56,12 @@ fn run() -> Res<()> {
     let mut buf = String::new();
     let mut new_buf = String::new();
 
-    unsafe {
-        signal_hook::register(signal_hook::SIGTERM, move || {
-            if let Err(e) = kill(Pid::from_raw(child.id() as i32), SIGTERM) {
-                eprintln!("{}", e);
-            }
-            std::process::exit(0);
-        })?;
-    }
+    simple_signal::set_handler(&[Signal::Term, Signal::Int], move |_| {
+        if let Err(e) = kill(Pid::from_raw(child.id() as i32), SIGTERM) {
+            eprintln!("{}", e);
+        }
+        std::process::exit(0);
+    });
 
     loop {
         match child_stdout.read_line(&mut new_buf) {

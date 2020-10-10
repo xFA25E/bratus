@@ -9,7 +9,7 @@ edition = "2018"
 [dependencies]
 nix = "0.18.0"
 structopt = "0.3.18"
-signal-hook = "0.1.16"
+simple-signal = "1.1.1"
 
 [profile.release]
 lto = true
