@@ -1,19 +1,15 @@
 use {
-    nix::{
-        sys::signal::{kill, Signal::SIGTERM},
-        unistd::Pid,
-    },
-    simple_signal::Signal,
     std::{
+        env,
         fmt::{self, Display},
         io::{self, stdout, BufRead, BufReader, BufWriter, Write},
-        process::{Child, ChildStdout, Command, Stdio},
+        os::unix::net::UnixStream,
+        path::{Path, PathBuf},
         str::FromStr,
     },
     structopt::StructOpt,
 };
 
-type CmdOut = BufReader<ChildStdout>;
 type Res<T> = io::Result<T>;
 
 pub struct Color(Option<String>);
@@ -52,19 +48,20 @@ fn run() -> Res<()> {
     let out = stdout();
     let mut out = BufWriter::new(out.lock());
     let colors = Colors::from_args();
-    let (child, mut child_stdout) = command_stdout(BSPWM_CMD)?;
     let mut buf = String::new();
     let mut new_buf = String::new();
 
-    simple_signal::set_handler(&[Signal::Term, Signal::Int], move |_| {
-        if let Err(e) = kill(Pid::from_raw(child.id() as i32), SIGTERM) {
-            eprintln!("{}", e);
-        }
-        std::process::exit(0);
-    });
+    let bspwm_socket = env::var("BSPWM_SOCKET")
+        .map(PathBuf::from)
+        .or_else(|_| find_socket())?;
+
+    let mut stream = UnixStream::connect(&bspwm_socket)?;
+    write!(stream, "subscribe\x00report\x00")?;
+
+    let mut stream = BufReader::new(stream);
 
     loop {
-        match child_stdout.read_line(&mut new_buf) {
+        match stream.read_line(&mut new_buf) {
             Ok(0) => break,
             Ok(_) => {
                 new_buf.pop();
@@ -77,7 +74,24 @@ fn run() -> Res<()> {
             error => error.map(|_| ())?,
         }
     }
+
     Ok(())
+}
+
+fn find_socket() -> Res<PathBuf> {
+    let regex = regex::Regex::new(r"bspwm(\w+)?_(\d+)?_(\d+)?-socket").unwrap();
+
+    for entry in Path::new("/tmp").read_dir()? {
+        if let Some(entry) = entry?.path().to_str() {
+            if regex.is_match(entry) {
+                return Ok(PathBuf::from(entry));
+            }
+        }
+    }
+    Err(io::Error::new(
+        io::ErrorKind::NotFound,
+        "Can't find bspwm socket",
+    ))
 }
 
 fn print_bspwm(c: &Colors, mut out: impl Write, bspwm: &str) -> Res<()> {
@@ -105,20 +119,6 @@ fn print_bspwm(c: &Colors, mut out: impl Write, bspwm: &str) -> Res<()> {
     }
     writeln!(out)?;
     out.flush()
-}
-
-fn command_stdout(command: &[&str]) -> Res<(Child, CmdOut)> {
-    let mut child = Command::new(command[0])
-        .args(&command[1..])
-        .stdout(Stdio::piped())
-        .spawn()?;
-
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "No stdout of process"))?;
-
-    Ok((child, BufReader::new(stdout)))
 }
 
 impl Color {
